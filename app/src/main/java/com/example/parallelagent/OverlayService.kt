@@ -92,9 +92,42 @@ class OverlayService : Service() {
                     island.text =
                         "✓ $result"
                 }
+
+                RecordingService.ACTION_TASK_DEFERRED -> {
+
+                    val foreground =
+                        intent.getStringExtra("foreground")
+                            ?: "unknown"
+
+                    val appName =
+                        when (foreground) {
+                            "com.xingin.xhs" -> "Xiaohongshu"
+                            "com.tencent.mm" -> "WeChat"
+                            else -> foreground
+                        }
+
+                    island.text =
+                        "⏸ Waiting · $appName is in use"
+                }
+
+
+                RecordingService.ACTION_APPROVAL_REQUIRED -> {
+
+                    island.text =
+                        "⚠ Approval required"
+                }
+
+                RecordingService.ACTION_NO_TOOL -> {
+                    island.text = "◇ Agent · Capability unavailable"
+                }
+
                 AgentAccessibilityService.ACTION_TRIGGER -> {
 
-                    island.text = "🎙 Starting..."
+                    val foregroundPackage =
+                        intent.getStringExtra("foreground_package")
+                            ?: "unknown"
+
+                    island.text = "📱 $foregroundPackage"
 
                     val recordingIntent =
                         Intent(this@OverlayService, RecordingService::class.java)
@@ -109,6 +142,30 @@ class OverlayService : Service() {
                 AgentAccessibilityService.ACTION_ABORT -> {
                     speechController.stop()
                     island.text = "■ Agent · Aborted"
+                }
+                AgentAccessibilityService.ACTION_APPROVE -> {
+
+                    val pendingAction = AgentState.pendingAction
+
+                    if (pendingAction != null) {
+
+                        // Prototype: approval is recorded,
+                        // but the real WeChat GUI executor is not implemented yet.
+                        island.text = "✓ Approved · Queued"
+
+                        AgentState.clearApproval()
+
+                    } else {
+
+                        island.text = "⚠ No pending action"
+                    }
+                }
+
+
+                AgentAccessibilityService.ACTION_REJECT -> {
+
+                    // State has already been cleared by AccessibilityService.
+                    island.text = "✕ Rejected"
                 }
             }
         }
@@ -160,7 +217,8 @@ class OverlayService : Service() {
 
             addAction(AgentAccessibilityService.ACTION_TRIGGER)
             addAction(AgentAccessibilityService.ACTION_ABORT)
-
+            addAction(AgentAccessibilityService.ACTION_APPROVE)
+            addAction(AgentAccessibilityService.ACTION_REJECT)
             addAction(RecordingService.ACTION_RECORDING_STARTED)
             addAction(RecordingService.ACTION_RECORDING_FINISHED)
             addAction(RecordingService.ACTION_RECORDING_FAILED)
@@ -172,6 +230,9 @@ class OverlayService : Service() {
             addAction(RecordingService.ACTION_PLAN_ERROR)
             addAction(RecordingService.ACTION_TOOL_RUNNING)
             addAction(RecordingService.ACTION_TOOL_RESULT)
+            addAction(RecordingService.ACTION_TASK_DEFERRED)
+            addAction(RecordingService.ACTION_APPROVAL_REQUIRED)
+            addAction(RecordingService.ACTION_NO_TOOL)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(

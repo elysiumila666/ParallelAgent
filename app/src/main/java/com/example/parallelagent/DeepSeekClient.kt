@@ -16,90 +16,30 @@ class DeepSeekClient {
             try {
 
                 // ① 定义 Agent 当前拥有的工具
-                val exchangeRateTool = JSONObject().apply {
-                    put("type", "function")
 
-                    put(
-                        "function",
-                        JSONObject().apply {
-
-                            put("name", "exchange_rate")
-
-                            put(
-                                "description",
-                                "Get the latest exchange rate between two currencies."
-                            )
-
-                            put(
-                                "parameters",
-                                JSONObject().apply {
-
-                                    put("type", "object")
-
-                                    put(
-                                        "properties",
-                                        JSONObject().apply {
-
-                                            put(
-                                                "from",
-                                                JSONObject().apply {
-                                                    put("type", "string")
-                                                    put(
-                                                        "description",
-                                                        "Base currency ISO code, e.g. CNY"
-                                                    )
-                                                }
-                                            )
-
-                                            put(
-                                                "to",
-                                                JSONObject().apply {
-                                                    put("type", "string")
-                                                    put(
-                                                        "description",
-                                                        "Target currency ISO code, e.g. AUD"
-                                                    )
-                                                }
-                                            )
-                                        }
-                                    )
-
-                                    put(
-                                        "required",
-                                        JSONArray().apply {
-                                            put("from")
-                                            put("to")
-                                        }
-                                    )
-                                }
-                            )
-                        }
-                    )
-                }
 
 
                 // ② 以后所有工具都放进这个 Tool Registry
-                val tools = JSONArray().apply {
-                    put(exchangeRateTool)
-                }
+                val tools = ToolRegistry.toDeepSeekTools()
 
 
                 // ③ Planner 的系统规则
                 val systemPrompt = """
-                    You are the planner of a parallel Android phone agent.
+    You are the planner of a parallel Android phone agent.
 
-                    The human always owns the foreground screen.
+    Determine what capability is required to complete the user's request.
 
-                    You may use the provided tools when needed.
+    When an available tool can perform the required capability,
+    use the appropriate tool based on its name, description,
+    and parameter schema.
 
-                    If a user's request can be completed using an available
-                    background tool, call that tool.
+    Do not invent tool results.
 
-                    Do not invent tool results.
-
-                    For now, use exchange_rate whenever the user asks for
-                    a currency exchange rate.
-                """.trimIndent()
+    Do not decide whether a tool is currently safe or appropriate
+    to execute based on device state.
+    Execution policy, resource conflicts, permissions, and user
+    approval are handled by the Android Agent Runtime.
+""".trimIndent()
 
 
                 val messages = JSONArray().apply {
@@ -244,14 +184,20 @@ class DeepSeekClient {
 
                 } else {
 
-                    // DeepSeek 判断不需要工具
+                    // DeepSeek did not select any registered capability.
+                    // Return a structured result instead of raw text.
                     val content =
                         message.optString(
                             "content",
-                            "No tool selected"
+                            "No available tool can handle this request."
                         )
 
-                    onSuccess(content)
+                    val result = JSONObject().apply {
+                        put("type", "no_tool")
+                        put("message", content)
+                    }
+
+                    onSuccess(result.toString())
                 }
 
 

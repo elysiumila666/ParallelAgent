@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import java.io.File
+import org.json.JSONObject
 
 class RecordingService : Service() {
     private lateinit var outputFile: File
@@ -45,6 +46,13 @@ class RecordingService : Service() {
 
         const val ACTION_TOOL_RESULT =
             "com.example.parallelagent.TOOL_RESULT"
+        const val ACTION_TASK_DEFERRED =
+            "com.example.parallelagent.TASK_DEFERRED"
+
+        const val ACTION_APPROVAL_REQUIRED =
+            "com.example.parallelagent.APPROVAL_REQUIRED"
+        const val ACTION_NO_TOOL =
+            "com.example.parallelagent.NO_TOOL"
         private const val CHANNEL_ID = "agent_microphone"
     }
 
@@ -117,7 +125,7 @@ class RecordingService : Service() {
 
             handler.postDelayed({
                 stopRecording()
-            }, 5000)
+            }, 10000)
 
         } catch (e: Exception) {
 
@@ -182,103 +190,221 @@ class RecordingService : Service() {
                     onSuccess = { plan ->
 
                         try {
-
                             val planJson = org.json.JSONObject(plan)
 
                             val type = planJson.optString("type")
+                            val toolName = planJson.optString("tool")
 
-                            val tool = planJson.optString("tool")
+                            if (type == "tool_call") {
 
-                            if (
-                                type == "tool_call" &&
-                                tool == "exchange_rate"
-                            ) {
+                                // ① 从 Tool Registry 查询这个 Tool 的资源属性
+                                val agentTool = ToolRegistry.get(toolName)
 
-                                val arguments =
-                                    planJson.getJSONObject("arguments")
+                                if (agentTool == null) {
+                                    sendBroadcast(
+                                        Intent(ACTION_PLAN_ERROR)
+                                            .setPackage(packageName)
+                                            .putExtra(
+                                                "error",
+                                                "Unknown tool: $toolName"
+                                            )
+                                    )
 
-                                val from =
-                                    arguments.getString("from")
-
-                                val to =
-                                    arguments.getString("to")
-
-
-                                // 告诉 Island：Agent 正在执行工具
-                                sendBroadcast(
-                                    Intent(ACTION_TOOL_RUNNING)
-                                        .setPackage(packageName)
-                                        .putExtra(
-                                            "tool",
-                                            "$from → $to"
-                                        )
-                                )
+                                    stopForeground(STOP_FOREGROUND_REMOVE)
+                                    stopSelf()
+                                    return@plan
+                                }
 
 
-                                // 真正执行 ExchangeRateTool
-                                ExchangeRateTool().execute(
+                                // ② 当前是否有 Human 正在占用前台
+                                val foregroundPackage =
+                                    AgentTaskContext.foregroundPackageAtTrigger
 
-                                    from = from,
-                                    to = to,
+                                val foregroundOccupiedByHuman =
+                                    foregroundPackage != null &&
+                                            foregroundPackage != packageName
 
-                                    onSuccess = { result ->
 
-                                        val displayText =
-                                            "💱 1 ${result.base} = " +
-                                                    "%.4f".format(result.rate) +
-                                                    " ${result.quote}"
+                                // ③ 交给 Scheduler，而不是让 DeepSeek 决定
+                                val scheduleResult =
+                                    AgentScheduler.schedule(
+                                        tool = agentTool,
+                                        foregroundOccupiedByHuman =
+                                            foregroundOccupiedByHuman
+                                    )
+
+
+                                when (scheduleResult.decision) {
+
+                                    ScheduleDecision.EXECUTE -> {
+
+                                        // 当前真正实现的执行 Tool：汇率
+                                        if (toolName == "exchange_rate") {
+
+                                            val arguments =
+                                                planJson.getJSONObject("arguments")
+
+                                            val from =
+                                                arguments.getString("from")
+
+                                            val to =
+                                                arguments.getString("to")
+
+
+                                            sendBroadcast(
+                                                Intent(ACTION_TOOL_RUNNING)
+                                                    .setPackage(packageName)
+                                                    .putExtra(
+                                                        "tool",
+                                                        "$from → $to"
+                                                    )
+                                            )
+
+
+                                            ExchangeRateTool().execute(
+
+                                                from = from,
+                                                to = to,
+
+                                                onSuccess = { result ->
+
+                                                    val displayText =
+                                                        "💱 1 ${result.base} = " +
+                                                                "%.4f".format(result.rate) +
+                                                                " ${result.quote}"
+
+                                                    sendBroadcast(
+                                                        Intent(ACTION_TOOL_RESULT)
+                                                            .setPackage(packageName)
+                                                            .putExtra(
+                                                                "result",
+                                                                displayText
+                                                            )
+                                                    )
+
+                                                    stopForeground(
+                                                        STOP_FOREGROUND_REMOVE
+                                                    )
+                                                    stopSelf()
+                                                },
+
+                                                onError = { error ->
+
+                                                    sendBroadcast(
+                                                        Intent(ACTION_PLAN_ERROR)
+                                                            .setPackage(packageName)
+                                                            .putExtra(
+                                                                "error",
+                                                                error
+                                                            )
+                                                    )
+
+                                                    stopForeground(
+                                                        STOP_FOREGROUND_REMOVE
+                                                    )
+                                                    stopSelf()
+                                                }
+                                            )
+
+                                        } else {
+
+                                            sendBroadcast(
+                                                Intent(ACTION_PLAN_ERROR)
+                                                    .setPackage(packageName)
+                                                    .putExtra(
+                                                        "error",
+                                                        "Tool not implemented yet"
+                                                    )
+                                            )
+
+                                            stopForeground(STOP_FOREGROUND_REMOVE)
+                                            stopSelf()
+                                        }
+                                    }
+
+
+                                    ScheduleDecision.DEFER -> {
 
                                         sendBroadcast(
-                                            Intent(ACTION_TOOL_RESULT)
+                                            Intent(ACTION_TASK_DEFERRED)
                                                 .setPackage(packageName)
                                                 .putExtra(
-                                                    "result",
-                                                    displayText
+                                                    "tool",
+                                                    toolName
+                                                )
+                                                .putExtra(
+                                                    "foreground",
+                                                    foregroundPackage ?: "unknown"
+                                                )
+                                                .putExtra(
+                                                    "reason",
+                                                    scheduleResult.reason
                                                 )
                                         )
 
-                                        stopForeground(
-                                            STOP_FOREGROUND_REMOVE
-                                        )
-
-                                        stopSelf()
-                                    },
-
-                                    onError = { error ->
-
-                                        sendBroadcast(
-                                            Intent(ACTION_PLAN_ERROR)
-                                                .setPackage(packageName)
-                                                .putExtra(
-                                                    "error",
-                                                    error
-                                                )
-                                        )
-
-                                        stopForeground(
-                                            STOP_FOREGROUND_REMOVE
-                                        )
-
+                                        stopForeground(STOP_FOREGROUND_REMOVE)
                                         stopSelf()
                                     }
+
+
+                                    ScheduleDecision.ASK_APPROVAL -> {
+
+                                        val arguments =
+                                            planJson.optJSONObject("arguments")
+                                                ?: JSONObject()
+
+                                        // Save the complete action before asking the user.
+                                        AgentState.waitForApproval(
+                                            toolName = toolName,
+                                            arguments = arguments
+                                        )
+
+                                        sendBroadcast(
+                                            Intent(ACTION_APPROVAL_REQUIRED)
+                                                .setPackage(packageName)
+                                                .putExtra(
+                                                    "tool",
+                                                    toolName
+                                                )
+                                        )
+
+                                        stopForeground(STOP_FOREGROUND_REMOVE)
+                                        stopSelf()
+                                    }
+                                }
+
+                            } else if (type == "no_tool") {
+
+                                val message =
+                                    planJson.optString(
+                                        "message",
+                                        "No available capability can handle this request."
+                                    )
+
+                                sendBroadcast(
+                                    Intent(ACTION_NO_TOOL)
+                                        .setPackage(packageName)
+                                        .putExtra(
+                                            "message",
+                                            message
+                                        )
                                 )
+
+                                stopForeground(STOP_FOREGROUND_REMOVE)
+                                stopSelf()
 
                             } else {
 
-                                // 没有匹配到可执行 Tool
                                 sendBroadcast(
-                                    Intent(ACTION_PLAN_RESULT)
+                                    Intent(ACTION_PLAN_ERROR)
                                         .setPackage(packageName)
                                         .putExtra(
-                                            "plan",
-                                            plan
+                                            "error",
+                                            "Unknown planner result type: $type"
                                         )
                                 )
 
-                                stopForeground(
-                                    STOP_FOREGROUND_REMOVE
-                                )
-
+                                stopForeground(STOP_FOREGROUND_REMOVE)
                                 stopSelf()
                             }
 
@@ -289,14 +415,11 @@ class RecordingService : Service() {
                                     .setPackage(packageName)
                                     .putExtra(
                                         "error",
-                                        e.message ?: "Tool execution error"
+                                        e.message ?: "Scheduling error"
                                     )
                             )
 
-                            stopForeground(
-                                STOP_FOREGROUND_REMOVE
-                            )
-
+                            stopForeground(STOP_FOREGROUND_REMOVE)
                             stopSelf()
                         }
                     },
